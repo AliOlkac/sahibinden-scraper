@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sahibinden-scraper"
+version = "0.1.0"
+description = "sahibinden.com otomobil ilanlarını tek bir karşılaştırılabilir veri setine dönüştürür"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "PyYAML>=6.0",
+    "playwright>=1.44",
+    # Windows ships no tz database; without this zoneinfo cannot resolve
+    # Europe/Istanbul and every relative listing date silently uses the
+    # machine clock instead.
+    'tzdata>=2024.1; sys_platform == "win32"',
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+sahibinden-scraper = "sahibinden_scraper.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# The selector map ships INSIDE the package: it is data the parser cannot run
+# without, and a repo-relative path breaks the moment the tool is pip-installed.
+[tool.setuptools.package-data]
+sahibinden_scraper = ["selectors.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]

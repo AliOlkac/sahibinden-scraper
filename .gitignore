@@ -1,0 +1,18 @@
+# Runtime output
+out/
+runs/
+doctor-report.json
+
+# Saved sahibinden pages. Kept out of git deliberately: they are copies of a
+# third-party commercial site and can carry seller names and other personal data.
+tests/fixtures/real/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/

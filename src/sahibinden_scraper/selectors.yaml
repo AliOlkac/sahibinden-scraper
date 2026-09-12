@@ -1,0 +1,461 @@
+# =====================================================================
+# sahibinden.com - otomobil selector map
+# =====================================================================
+# Read at runtime by src/sahibinden_scraper/extract.py (Rule.from_config).
+# Repair this file instead of editing Python when the site's HTML drifts;
+# `python -m sahibinden_scraper doctor` tells you exactly which rule broke.
+#
+# Rule spec accepted anywhere below:
+#   "a.foo"                        -> single CSS selector
+#   ["a.foo", "a.bar"]             -> ORDERED fallbacks, first non-empty wins
+#   {css: [...], attr: href}       -> read an attribute instead of text
+#   {labels: ["Yıl"]}              -> Turkish LABEL lookup in a key/value list
+#   {css: [...], regex: "..."}     -> post-filter, group(1) if present
+#   {css: [...], many: true}       -> collect every match
+#
+# CONFIDENCE LEGEND (read this before trusting anything here):
+#   [C]  corroborated: seen verbatim in >=2 third-party codebases that read
+#        this site. NOT live-verified - scraper selectors get copy-pasted
+#        between repos, so two sources are not fully independent.
+#   [1]  single secondary source.
+#   [?]  INFERRED. Never observed anywhere. Assume broken until a fixture proves
+#        otherwise.
+#
+# NOTHING IN THIS FILE HAS BEEN VALIDATED AGAINST A LIVE PAGE. sahibinden.com
+# returns 403/an interstitial to every automated client, so the whole map is a
+# hypothesis. Capture one real page and run `doctor` before trusting a run.
+# =====================================================================
+version: 1
+site: sahibinden.com
+base_url: https://www.sahibinden.com
+updated: 2026-09-08
+
+# ---------------------------------------------------------------------
+# Pagination
+# ---------------------------------------------------------------------
+pagination:
+  size_param: pagingSize
+  offset_param: pagingOffset       # ITEM offset, advance by page_size (0, 50, 100...)
+  page_size: 50                    # [C] 50 is the largest the site offers
+  hard_cap: 1000                   # [C] deep paging dies past ~1000 results...
+  hard_cap_confirmed: false        # ...but 950 vs 1000 is unconfirmed; probe it
+  # View mode is sticky SERVER-SIDE per session. Merely stripping viewType leaves
+  # a previously-chosen Galeri mode in force and the results table never renders,
+  # so the value is forced, not removed.
+  force_params:
+    viewType: Classic              # [?] literal value unverified - check run 1
+    # date_asc, NOT date_desc, and the reason matters: sahibinden sells a "doping"
+    # product that republishes a listing to the front of date_desc. Under _desc
+    # that pushes unseen rows past your cursor and you silently MISS cars. Under
+    # _asc a refreshed listing moves to the END, so you get duplicates instead -
+    # and duplicates are removed by the data-id dedupe. Prefer noise over holes.
+    sorting: date_asc              # [C]
+  # aN parameter ids are CATEGORY-SCOPED. These are otomobil's; re-derive from the
+  # sidebar input names before using them on arazi/SUV/pickup.
+  slice_params:
+    year:  {min: a5_min, max: a5_max}        # [C]
+    km:    {min: a4_min, max: a4_max}        # [1]
+    price: {min: price_min, max: price_max}  # [C]
+  km_brackets: [[0, 50000], [50001, 100000], [100001, 200000], [200001, 9999999]]
+
+# ---------------------------------------------------------------------
+# Page-shape guards. If none match after a navigation we are not on the page we
+# asked for, and the scraper hands the window to you rather than parsing garbage.
+# ---------------------------------------------------------------------
+guards:
+  search_ready:
+    - "table#searchResultsTable tr.searchResultsItem[data-id]"
+    - "tbody.searchResultsRowClass > tr[data-id]"
+    - ".classified-list-item[data-id]"          # gallery/list view fallback
+  detail_ready:
+    - "ul.classifiedInfoList li"
+    - ".classifiedDetail .classifiedInfoList li"
+    - "#classifiedDescription"                  # last: empty descriptions exist
+  # A listing pulled down mid-run returns HTTP 200 with none of the above. Without
+  # this it is indistinguishable from a block and the scraper would sit waiting for
+  # a human to rescue a dead ad.
+  gone_text:
+    - "yayından kaldırıl"
+    - "ilan bulunamadı"
+    - "ilan yayında değil"
+    - "süresi dolmuş"
+    - "yayından kalkmış"
+  # Log-line labels only. Primary detection is absence-of-expected-container;
+  # these strings come from user reports of what they saw, never from markup. [?]
+  interstitial_text:
+    - "tarayıcınızı kontrol"
+    - "güvenlik doğrulama"
+    - "robot doğrulama"
+    - "just a moment"
+    - "erişim engellendi"
+  login_text:
+    - "giriş yap"
+    - "oturum açın"
+  min_body_bytes: 40000            # a real page dwarfs any challenge page
+
+# =====================================================================
+# SEARCH RESULTS
+# =====================================================================
+search:
+  container:
+    - "table#searchResultsTable"
+    - "#searchResultsTable"
+    - "tbody.searchResultsRowClass"
+
+  # [C] Every listing row carries data-id, in both table and gallery views.
+  row:
+    - "tr.searchResultsItem[data-id]"
+    - "#searchResultsTable tbody.searchResultsRowClass > tr[data-id]"
+    - ".classified-list-item[data-id]"
+
+  row_id_attr: data-id
+  # [C] the attribute is real; "present == dealer" is an INFERENCE on top of it,
+  # so it is only ever used to cross-check the Kimden label, never to override it.
+  row_store_attr: data-store_name
+
+  # Paid "Doping" rows sit in the same tbody and are frequently duplicates of an
+  # organic row further down. Filtering them is necessary but not sufficient -
+  # global dedupe on data-id is what actually saves you.
+  skip_row_classes:
+    - nativeAd
+    - searchResultsPromoToplist
+    - searchResultsPromoSuper
+  skip_row_class_contains: ["Promo"]
+
+  fields:
+    # The slug ends with the id; anchored to the RIGHTMOST run of digits because
+    # slugs contain other long numbers (engine codes, "1.5 tdci 2018 ...").
+    id:
+      css: ["td.searchResultsTitleValue a.classifiedTitle", "a.classifiedTitle"]
+      attr: href
+      regex: "-(\\d{6,})(?:/detay)?/?$"
+    url:
+      css:
+        - "td.searchResultsTitleValue a.classifiedTitle"
+        - "a.classifiedTitle"
+        - "td.searchResultsLargeThumbnail a"
+        - "a[href*='/ilan/vasita-']"
+      attr: href                       # ROOT-RELATIVE - urljoin against base_url [C]
+    title:
+      - "td.searchResultsTitleValue a.classifiedTitle"
+      - "a.classifiedTitle"
+      - "td.searchResultsTitleValue a"
+    thumbnail_url:
+      css: ["td.searchResultsLargeThumbnail img", "td:first-child img", "img[src*='shbdn']"]
+      attr: src
+
+    # THE MOST DANGEROUS PAIR ON THIS PAGE. Four characters apart, same row:
+    #   td.searchResultsTagAttributeValue -> Marka / Seri / Motor-donanım   [C]
+    #   td.searchResultsAttributeValue    -> Yıl / KM / Renk                [C]
+    # Swapping them yields plausible garbage ("Renault" in the year column), not a
+    # crash, so it survives review. Never merge these two.
+    #
+    # The TagAttributeValue COUNT varies with how narrow the supplied filter URL
+    # already is (a URL already scoped to one series drops that column), so
+    # positional reads WILL misalign. Header mapping is the primary path.
+    taxonomy_cells:
+      css: ["td.searchResultsTagAttributeValue", "td[class*='TagAttributeValue']"]
+      many: true
+    attribute_cells:
+      css: ["td.searchResultsAttributeValue", "td[class*='AttributeValue']:not([class*='Tag'])"]
+      many: true
+
+    # Positional fallbacks, used only when header mapping fails. otomobil only. [?]
+    year:   ["td.searchResultsAttributeValue:nth-of-type(1)"]
+    km:     ["td.searchResultsAttributeValue:nth-of-type(2)"]
+    color:  ["td.searchResultsAttributeValue:nth-of-type(3)"]
+
+    price:
+      - "td.searchResultsPriceValue div.classified-price-container span"
+      - "td.searchResultsPriceValue > div"
+      - "div.classified-price-container"
+      - "td.searchResultsPriceValue"
+    listed_date:
+      - "td.searchResultsDateValue"        # spans joined by <br>; TR month map [C]
+      - "td.searchResultsDateValue span"
+      - "td[class*='DateValue']"
+    # [1] il/ilçe are <br>-separated, not two labelled spans. Split on newline.
+    location:
+      - "td.searchResultsLocationValue"
+      - "td[class*='LocationValue']"
+
+  # Header-text -> column index. Read once per page; survives the variable
+  # TagAttributeValue count that breaks positional indexing.
+  header:
+    css: ["#searchResultsTable thead th", "thead th"]
+    aliases:
+      year:     ["Yıl"]
+      km:       ["KM", "Kilometre"]
+      color:    ["Renk"]
+      price:    ["Fiyat"]
+      date:     ["İlan Tarihi", "Tarih"]
+      location: ["İl / İlçe", "İl/İlçe", "Adres"]
+      brand:    ["Marka"]
+      series:   ["Seri"]
+      model:    ["Model"]
+
+  total_count:
+    css: ["div.result-text", ".result-text > span", ".result-text", "span.result-text"]
+    regex: "([\\d.]+)"
+  # Turkish-locale dependent; an /en/ session localises the title. Used only as an
+  # end-of-results signal - pagination itself is URL-driven.
+  next_page:
+    css: ["a.prevNextBut[title='Sonraki']", ".prevNextBut[title='Sonraki']", "a[title='Sonraki']"]
+    attr: href
+  current_page:
+    css: ["input#currentPageValue", "input[name='currentPageValue']"]
+    attr: value
+
+# =====================================================================
+# DETAIL PAGE
+# =====================================================================
+detail:
+  scope: [".classifiedDetail", "#classifiedDetail", "body"]
+
+  # Both label/value shapes live on this page; label_value() handles
+  # li(strong,span), li(span,span), tr(td.title,td.value) and dt/dd uniformly. [C]
+  info_list:
+    - "ul.classifiedInfoList"
+    - ".classifiedInfo ul.classifiedInfoList"
+    - ".classifiedInfo ul"
+  spec_table:
+    - "table.classifiedInfo"        # [?] container inferred; the shape is not
+    - ".classifiedDetail table"
+
+  title: [".classifiedDetailTitle h1", "div.classifiedDetailTitle h1", "h1"]
+
+  price_display:
+    - ".classified-price-wrapper"
+    - ".classifiedInfo h3"
+    - ".sticky-header-attribute.price"
+  # [C] hidden input holding a clean number. UNKNOWN whether it carries the
+  # original currency or a TRY conversion for USD/EUR ads, so it is cross-checked
+  # against the displayed price and a mismatch raises a parse warning.
+  price_value:
+    css: ["#favoriteClassifiedPrice", "input#favoriteClassifiedPrice"]
+    attr: value
+
+  listing_id:
+    css: ["#classifiedId"]
+    attr: data-classifiedid
+  listing_id_input:
+    css: ["input#classifiedIdValue"]
+    attr: value
+  # The only guaranteed route to the id. Anchored right, same reason as above.
+  listing_id_url_regex: "-(\\d{6,})(?:/detay)?/?$"
+
+  # LOCATION breadcrumb - [0]=il [1]=ilçe [2]=mahalle. This is NOT the category
+  # breadcrumb; reading it as brand/series puts city names in your brand field. [C]
+  location_breadcrumb:
+    css: [".classifiedInfo h2 a"]
+    many: true
+
+  description: ["#classifiedDescription", "div#classifiedDescription"]
+
+  # [C] element and JSON.parse call confirmed, key names never observed by anyone.
+  # Stored raw as a cross-check; nothing is mapped out of it.
+  embedded_json:
+    css: ["div#gaPageViewTrackingJson"]
+    attr: data-json
+
+  # -------------------------------------------------------------------
+  # Turkish LABEL aliases. The real data lives here, and labels are far more
+  # stable than class names. Folded with tr_key() before comparing.
+  # -------------------------------------------------------------------
+  labels:
+    id:                          ["İlan No", "İlan Numarası"]
+    listed_date:                 ["İlan Tarihi"]
+    brand:                       ["Marka"]
+    series:                      ["Seri"]
+    model:                       ["Model"]
+    trim:                        ["Donanım", "Paket"]        # [?] aliases invented
+    year:                        ["Yıl"]
+    fuel:                        ["Yakıt", "Yakıt Tipi"]
+    transmission:                ["Vites", "Vites Tipi"]
+    condition:                   ["Araç Durumu", "Durumu"]
+    km:                          ["KM", "Kilometre"]
+    body_type:                   ["Kasa Tipi", "Kasa"]
+    engine_power_hp:             ["Motor Gücü"]      # BUCKET: "101 - 125 hp"
+    engine_volume_cc:            ["Motor Hacmi"]     # BUCKET: "1401 - 1600 cm3"
+    drivetrain:                  ["Çekiş"]
+    color:                       ["Renk"]
+    warranty:                    ["Garanti"]
+    heavy_damage_record:         ["Ağır Hasar Kayıtlı", "Ağır Hasarlı"]
+    plate_nationality:           ["Plaka / Uyruk", "Plaka/Uyruk", "Plaka"]
+    seller_type:                 ["Kimden"]
+    exchange_accepted:           ["Takas", "Takasa Uygun"]
+    city:                        ["İl"]
+    district:                    ["İlçe"]
+    # Second DOM shape (td.title / td.value). Label spellings come from ONE
+    # userscript's findText() calls. [1]
+    avg_consumption_l_per_100km: ["Ort. Yakıt Tüketimi", "Ortalama Yakıt Tüketimi"]
+    consumption_city:            ["Şehir içi"]
+    consumption_highway:         ["Şehir dışı"]
+    fuel_tank_litres:            ["Yakıt Deposu"]
+    acceleration_0_100_s:        ["Hızlanma 0-100 km/saat", "Hızlanma"]
+    max_speed_kmh:               ["Maksimum Hız", "Azami Hız"]   # [?] guessed
+  required_labels: [year, km, fuel, transmission]
+  keep_unknown_labels: true          # anything unmapped lands in extras{}
+
+  # -------------------------------------------------------------------
+  # Boya / değişen. Panel identity is the FIRST class token, state is another
+  # class token. No SVG, no canvas, no data-* attributes. [C]
+  #
+  # TRAP: "local-painted-new" CONTAINS "painted-new". A substring match silently
+  # reclassifies every locally-painted panel as fully painted, which materially
+  # mis-prices the car. The parser matches whole class TOKENS and tests the
+  # longest state first; do not "simplify" that.
+  # -------------------------------------------------------------------
+  damage:
+    panels: [".car-parts > div"]
+    state_tokens:
+      lokal_boyali: ["local-painted-new"]
+      boyali:       ["painted-new"]
+      degismis:     ["changed-new"]
+      orijinal:     ["original-new", "original"]
+    panel_names:
+      front-bumper:         "Ön Tampon"
+      front-hood:           "Motor Kaputu"
+      roof:                 "Tavan"
+      front-right-mudguard: "Sağ Ön Çamurluk"
+      front-right-door:     "Sağ Ön Kapı"
+      rear-right-door:      "Sağ Arka Kapı"
+      rear-right-mudguard:  "Sağ Arka Çamurluk"
+      front-left-mudguard:  "Sol Ön Çamurluk"
+      front-left-door:      "Sol Ön Kapı"
+      rear-left-door:       "Sol Arka Kapı"
+      rear-left-mudguard:   "Sol Arka Çamurluk"
+      rear-hood:            "Bagaj Kapağı"
+      rear-bumper:          "Arka Tampon"
+    # Independent textual read of the same data; cross-checked against panels. [C]
+    text_list: [".car-damage-info-list ul li"]
+    text_title_class: "pair-title"
+    text_selected_class: "selected-damage"
+    # The site's own counters, used as a crosscheck against our panel parse.
+    painted_count_css: [".car-parts .painted-new"]
+    replaced_count_css: [".car-parts .changed-new"]
+
+  # -------------------------------------------------------------------
+  # Donanım. The <ul> enumerates EVERY option for the group and li.selected marks
+  # the ones this car has - so the *absent* set comes free, and for cross-listing
+  # comparison it is the more useful half. [C]
+  # -------------------------------------------------------------------
+  features:
+    groups: ["#classifiedProperties h3", ".classifiedOtherDetails h3"]
+    list_is_next_sibling: true
+    selected_class: "selected"
+    # The boya/değişen summary renders as an h3+ul in the same container. [1]
+    skip_group_regex: "boyalı|değişen|hasar"
+    # Some listings collapse groups behind a "Tüm özellikler" toggle.
+    expand_toggle: ["#classifiedProperties .showAll", "a.showAllProperties"]
+
+  # -------------------------------------------------------------------
+  # Photos. The full-size URL is in data-source, NOT src. [C]
+  # -------------------------------------------------------------------
+  images:
+    main:
+      css: [".classifiedDetailMainPhoto label img"]
+      attr: data-source
+      many: true
+    thumbs:
+      css: [".classifiedDetailThumbList li label img", ".thmbImg"]
+      attr: data-source
+      many: true
+    lightbox:
+      css: ["#megaPhotoBox .megaPhotoThmbItem img"]
+      attr: data-source
+      many: true
+    src_fallback:
+      css: [".classifiedDetailMainPhoto label img", ".classifiedDetailThumbList li label img"]
+      attr: src
+      many: true
+    og_fallback:
+      css: ["meta[property='og:image']"]
+      attr: content
+    # Size prefixes ascending: thmb_ < x5_ < big_ < x2_ < x16_. The prefix is
+    # OPTIONAL and sits on the FILENAME, not a directory. Upscaling is best-effort:
+    # some listings 404 on x16_, so a rewrite never replaces a working URL.
+    upscale_regex: "/(?:thmb_|x5_|big_|x2_|x16_)?([^/]+)$"
+    upscale_replacement: "/x16_\\1"
+
+  # -------------------------------------------------------------------
+  # Seller. Which variant renders depends on private / gallery / authorised
+  # dealer, and every selector here is single-source. [1]
+  # -------------------------------------------------------------------
+  seller:
+    name: [".username-info-area h5 span", ".username-info-area h5", ".user-info-agent h3"]
+    store_name: [".storeBox .storeInfo", ".user-info-store-name", "span.store-card span.storeInfo"]
+    store_url:
+      css: ["div.storeBox a"]
+      attr: href
+    registered_since: [".userRegistrationDate span", "#badge strong"]
+    # DELIBERATELY NOT COLLECTED: phone numbers. Personal data, needs an extra
+    # reveal click per listing, and contributes nothing to a price/spec comparison.
+
+  # Not asked for, but it reveals price cuts and therefore negotiating room. [1]
+  price_history:
+    rows: [".price-history-table tr"]
+    date: [".inner-date"]
+
+# =====================================================================
+# Free-text mining. Everything here is the SELLER'S OWN PROSE, not a registry
+# lookup, and every field it produces is tagged provenance "description_regex"
+# in the export so a model never treats it as authoritative.
+#
+# WRITE THESE PATTERNS IN PLAIN ASCII. The description is folded with tr_fold()
+# before matching, which maps ı/İ/ş/ğ/ü/ö/ç to their ASCII letters — so "ÖTV" is
+# already "otv" and "İkinci" is already "ikinci" by the time a pattern sees it.
+# A pattern containing a Turkish character can therefore never match, and the
+# config linter rejects one rather than letting the finding vanish silently.
+# (This is not cosmetic: "İkinci".lower() is "i" + COMBINING DOT ABOVE, so the
+# pre-fold version of `second_key` below matched nothing at all.)
+# =====================================================================
+text_mining:
+  tramer: "(?:tramer|hasar\\s*kaydi)[^0-9]{0,40}([\\d.,]+)\\s*(?:tl)?"
+  tramer_none: "(tramer\\s*(?:kaydi)?\\s*(?:yok|yoktur|siz)|tramersiz)"
+  clean_claim: "(hatasiz|boyasiz|degisensiz|tramersiz|tramer\\s*yok)"
+  # Categorically different from boyalı/değişen AND from "Ağır Hasar Kayıtlı".
+  pert: "(pert\\s*kayitli|pert\\b|hasarli\\s*arac)"
+  # Changes the price 20-40% and carries a legal resale restriction. The single
+  # most price-relevant thing that has no structured field on the site.
+  otv_exempt: "(otv\\s*muaf|engelli\\s*arac|h\\s*sinifi\\s*ehliyet)"
+  lpg_fitted: "(lpg\\s*(?:montajli|li|'?li)|lpg\\s*takil)"
+  service_history: "(yetkili\\s*servis\\s*bakimli|servis\\s*bakimli|bakimlari\\s*yetkili)"
+  second_key: "(ikinci\\s*anahtar|2\\.\\s*anahtar|yedek\\s*anahtar)"
+  credit_ok: "(krediye\\s*uygun|kredi\\s*kullan)"
+  inspection_year: "muayene\\w*\\s*(?:[^0-9]{0,20})(20\\d{2})"
+  negotiable: "(pazarlik\\s*(?:payi|olur)|takas\\s*olur)"
+  no_negotiation: "(pazarlik\\s*yok|pazarliksiz|fiyat\\s*sabit)"
+
+# =====================================================================
+# Canonical value vocabularies. Keys are folded with tr_key() before lookup, so
+# write them naturally. A literal "&" is required - an HTML entity here would
+# never match, because values are entity-decoded before lookup.
+# =====================================================================
+vocab:
+  fuel:
+    Benzin: "Benzin"
+    Dizel: "Dizel"
+    LPG: "LPG"
+    "Benzin & LPG": "Benzin & LPG"
+    Hibrit: "Hibrit"
+    Elektrik: "Elektrik"
+  transmission:
+    Manuel: "Manuel"
+    Düz: "Manuel"
+    Otomatik: "Otomatik"
+    "Yarı Otomatik": "Yarı Otomatik"
+  drivetrain:
+    "Önden Çekiş": "Önden Çekiş"
+    "Arkadan İtiş": "Arkadan İtiş"
+    "4WD (Sürekli)": "4WD"
+    "4x4": "4WD"
+  seller_type:
+    Sahibinden: "Sahibinden"
+    Galeriden: "Galeriden"
+    "Yetkili Bayiden": "Yetkili Bayiden"
+  condition:
+    "İkinci El": "İkinci El"
+    Sıfır: "Sıfır"
+    "Yurtdışından İthal Sıfır": "Yurtdışından İthal Sıfır"
+    Klasik: "Klasik"
